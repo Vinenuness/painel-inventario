@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Painel - Inventário</title>
+  <style>
+    body{font-family:Arial;background:#0f172a;color:#e2e8f0;margin:0;padding:20px}
+    h1{margin:0}
+    .top{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:14px}
+    .left{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    input{padding:10px 12px;border-radius:10px;border:1px solid #334155;background:#0b1220;color:#e2e8f0;outline:none;min-width:280px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+    .card{background:#1e293b;border:1px solid #334155;border-radius:14px;padding:14px;transition:.15s}
+    .card:hover{transform:translateY(-2px);background:#22324a}
+    .row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+    .title{font-weight:800;color:#fff;font-size:16px}
+    .muted{color:#94a3b8;font-size:13px;margin-top:6px;line-height:1.35}
+    .btn{border:1px solid #334155;background:#0b1220;color:#e2e8f0;padding:8px 10px;border-radius:10px;cursor:pointer;font-size:12px}
+    .btn:hover{background:#0f1a2e}
+    a{color:#e2e8f0;text-decoration:none}
+    .small{font-size:12px;color:#94a3b8}
+    .online{color:#22c55e}
+    .offline{color:#f59e0b}
+    .danger{color:#ef4444}
+    .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:20px}
+    .modalBox{width:100%;max-width:520px;background:#111b33;border:1px solid #334155;border-radius:14px;padding:16px}
+    .modalTitle{font-weight:800;margin:0 0 10px 0}
+    .modalActions{display:flex;gap:10px;justify-content:flex-end;margin-top:12px}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="left">
+      <h1>Computadores</h1>
+      <div class="small" id="count"></div>
+      <a class="btn" href="/scripts">Scripts (.bat)</a>
+    </div>
+    <input id="q" placeholder="Buscar por TAG, apelido, hostname, IP, serial..." oninput="render()" />
+  </div>
+
+  <div id="grid" class="grid"></div>
+
+  <!-- Modal Renomear -->
+  <div id="modal" class="modal" onclick="hideModal()">
+    <div class="modalBox" onclick="event.stopPropagation()">
+      <h3 class="modalTitle">Renomear (apelido)</h3>
+      <div class="small" id="modalSub"></div>
+      <input id="aliasInput" placeholder="Ex: Recepção, Financeiro..." style="width:100%;margin-top:10px" />
+      <div class="modalActions">
+        <button class="btn" onclick="hideModal()">Cancelar</button>
+        <button class="btn" onclick="saveAlias()">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+let pcs = [];
+let editing = { agent_id: null, hostname: null };
+
+function safe(v){ return (v===undefined||v===null) ? "" : String(v); }
+
+function lastSeenMs(iso){
+  if(!iso) return 0;
+  const d = new Date(iso);
+  const t = d.getTime();
+  return isNaN(t) ? 0 : t;
+}
+
+function isOnline(pc){
+  const t = lastSeenMs(pc._last_seen);
+  if(!t) return false;
+  return (Date.now() - t) <= 3*60*1000;
+}
+
+async function load(){
+  const res = await fetch("/dados");
+  pcs = await res.json();
+  render();
+}
+
+function render(){
+  const q = document.getElementById("q").value.toLowerCase().trim();
+  const grid = document.getElementById("grid");
+
+  const filtered = pcs.filter(pc => {
+    const alias = safe(pc._alias).toLowerCase();
+    const host = safe(pc.hostname).toLowerCase();
+    const serial = safe(pc.serial).toLowerCase();
+    const ip = safe(pc.network?.ip).toLowerCase();
+    const tag = safe(pc._tag_evo).toLowerCase();
+    return !q || alias.includes(q) || host.includes(q) || serial.includes(q) || ip.includes(q) || tag.includes(q);
+  });
+
+  document.getElementById("count").innerText = `${filtered.length} PCs`;
+
+  grid.innerHTML = filtered.map(pc => {
+    const agent_id = safe(pc._agent_id);
+    const alias = safe(pc._alias);
+    const host = safe(pc.hostname);
+    const tag = safe(pc._tag_evo);
+    const showName = alias ? `${alias} (${host})` : host;
+
+    const status = isOnline(pc) ? `<span class="online">● Online</span>` : `<span class="offline">● Offline</span>`;
+    const ip = safe(pc.network?.ip);
+    const user = safe(pc.windows_user);
+
+    return `
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="title">${tag ? tag + " • " : ""}${showName}</div>
+            <div class="muted">${status} • IP: ${ip || "N/A"} • Usuário: ${user || "N/A"}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn" onclick="openAlias('${agent_id}','${host}')">Renomear</button>
+            <button class="btn danger" onclick="deletePc('${agent_id}')">Excluir</button>
+            <a class="btn" href="/pc/${encodeURIComponent(agent_id)}">Detalhes</a>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function openAlias(agent_id, hostname){
+  editing = { agent_id, hostname };
+  document.getElementById("modalSub").innerText = `PC: ${hostname}`;
+  document.getElementById("aliasInput").value = "";
+  document.getElementById("modal").style.display = "flex";
+}
+
+function hideModal(){
+  document.getElementById("modal").style.display = "none";
+}
+
+async function saveAlias(){
+  const alias = document.getElementById("aliasInput").value.trim();
+  const res = await fetch("/api/alias", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ agent_id: editing.agent_id, alias })
+  });
+  if(!res.ok){ alert("Erro ao salvar"); return; }
+  hideModal();
+  await load();
+}
+
+async function deletePc(agent_id){
+  const ok = confirm("Tem certeza que deseja excluir este computador?");
+  if(!ok) return;
+
+  const res = await fetch(`/pc/${encodeURIComponent(agent_id)}/delete`, { method:"POST" });
+  if(!res.ok){ alert("Erro ao excluir"); return; }
+  await load();
+}
+
+setInterval(load, 5000);
+load();
+</script>
+</body>
+</html>
